@@ -7,7 +7,7 @@
 | Tool | 说明 |
 |------|------|
 | `search_papers` | 谷歌学术论文搜索，支持年份过滤、自动精确去重、SSL 断连重试 |
-| `get_paper_detail` | 获取单篇论文详细信息（摘要、引用量） |
+| `get_paper_detail` | 获取单篇论文详细信息，自动从外部源（arxiv API / meta 标签）获取**完整摘要** |
 | `analyze_relevance` | TF-IDF + 余弦相似度相关性排序，关键词提取，方向聚类摘要 |
 | `generate_relevance_chart` | Matplotlib 多角度图表（柱状图 / K-Means 聚类 / 关键词）+ 本地 HTTP 服务端 |
 
@@ -44,6 +44,15 @@ pip install -e .
 ```
 SCHOLAR_PROXY  >  HTTP_PROXY / HTTPS_PROXY  >  默认 http://localhost:7890
 ```
+
+### 摘要说明
+
+Google Scholar 搜索结果页只提供摘要**片段**，多结果页面中不包含完整摘要。
+
+| 工具 | 摘要行为 |
+|------|----------|
+| `search_papers` | 返回 Google Scholar 片段（适合快速浏览，速度优先） |
+| `get_paper_detail` | 自动从外部源获取完整摘要：arxiv 走结构化 API，其他走页面 meta 标签；失败时回退到 Google Scholar 片段 |
 
 ## CherryStudio 接入
 
@@ -116,10 +125,10 @@ scholar_search/
 ├── server.py              # MCP Server 入口 (FastMCP, 4 个 Tool)
 ├── scholar_search/        # 核心包
 │   ├── config.py          # 代理 / 超时 / 重试 / 端口配置
-│   ├── search.py          # requests + BeautifulSoup 直连解析
+│   ├── search.py          # requests + bs4 直连解析，外部源完整摘要（arxiv API / meta 标签）
 │   ├── analysis.py        # TF-IDF + 余弦相似度 + 方向聚类
 │   └── viz.py             # Matplotlib 多图表 + HTTP 服务端
-├── tests/                 # pytest (93+25 tests)
+├── tests/                 # pytest (137 tests, 100% 覆盖)
 │   ├── test_config.py
 │   ├── test_search.py
 │   ├── test_analysis.py

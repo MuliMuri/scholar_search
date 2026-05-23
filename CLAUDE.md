@@ -51,7 +51,7 @@ scholar_search/
 ├── server.py              # MCP Server 入口，注册 4 个 Tool
 ├── scholar_search/        # 核心包
 │   ├── config.py          # 代理配置（SCHOLAR_PROXY > HTTP_PROXY > 默认 localhost:7890）
-│   ├── search.py          # requests + BeautifulSoup(lxml) 直连解析，摘要优先取 gs_fma_abs（完整版）回退 gs_rs（截断版）
+│   ├── search.py          # requests + bs4 直连解析，摘要优先 gs_fma_abs → 外部源 (arxiv API / meta 标签)
 │   ├── analysis.py        # TF-IDF + 余弦相似度相关性分析，含自定义停用词表
 │   └── viz.py             # Matplotlib 多角度图表（柱状图/K-Means 聚类/关键词）+ HTTP 本地服务端
 ├── tests/                 # pytest 测试 (137 tests, 100% 覆盖)
@@ -71,7 +71,7 @@ scholar_search/
 - **代理**: 默认 `http://localhost:7890`，可通过 `SCHOLAR_PROXY` 环境变量覆盖，设 `SCHOLAR_NO_PROXY=1` 禁用
 - **搜索节流**: 预搜索 ~0.8s 随机延迟，每条结果 1.5~3s 随机抖动避免固定频率被反爬识别
 - **智能重试**: 限流错误 (403/429) 等待 20~60s，普通网络错误指数退避，上限 120s
-- **异步封装**: 阻塞的 scholarly 调用通过 `asyncio.to_thread()` 在线程池执行，避免阻塞 MCP 事件循环
+- **异步封装**: 阻塞调用通过 `asyncio.to_thread()` 在线程池执行，避免阻塞 MCP 事件循环
 - **相关性分析**: 自定义英文停用词表 + `TfidfVectorizer(ngram_range=(1,2))` + `cosine_similarity`，得分 0-100
 - **图表生成**: Matplotlib (Agg backend) 生成 PNG，内存缓存 + ThreadingHTTPServer 本地服务（默认 127.0.0.1:8765），返回 markdown 链接 + 原始 URL，不自动打开浏览器。含三张图表：相关性柱状图 / K-Means 聚类散点图 / TF-IDF 关键词重要性图
 
@@ -79,10 +79,10 @@ scholar_search/
 
 | Tool | 参数 | 功能 |
 |------|------|------|
-| `search_papers` | query, num_results(1-30), year_low?, year_high? | 搜索论文，返回 title/authors/year/venue/citations/abstract/url |
-| `get_paper_detail` | title? or url? | 获取单篇论文完整信息 |
+| `search_papers` | query, num_results(1-30), year_low?, year_high? | 搜索论文（Google Scholar 摘要片段，快速浏览） |
+| `get_paper_detail` | title? or url? | 单篇论文详情，自动从外部源（arxiv API / meta 标签）获取完整摘要 |
 | `analyze_relevance` | topic, papers_json | 相关性排序 + 关键词 + 方向聚类摘要 |
-| `generate_relevance_chart` | topic?, papers_json | 生成 HTML 相关性柱状图（file:// 链接） |
+| `generate_relevance_chart` | topic?, papers_json | Matplotlib 多角度图表 + HTTP 本地服务端 |
 
 ## 代码规范
 
