@@ -17,6 +17,9 @@ from scholar_search.search import (
     _is_rate_limit_error,
     _run_with_timeout,
     _make_session,
+    _fetch_external_abstract,
+    _fetch_arxiv_abstract,
+    _fetch_meta_abstract,
 )
 
 
@@ -200,10 +203,11 @@ class TestSearchPapers:
 class TestGetPaperDetail:
     def test_success(self, monkeypatch):
         monkeypatch.delenv("SCHOLAR_RETRIES", raising=False)
-        mock_paper = {"title": "Found"}
+        mock_paper = {"title": "Found", "url": ""}
         with patch("scholar_search.search._search_request", return_value=[mock_paper]):
-            with patch("scholar_search.search.time.sleep"):
-                result = get_paper_detail("test")
+            with patch("scholar_search.search._fetch_external_abstract", return_value=None):
+                with patch("scholar_search.search.time.sleep"):
+                    result = get_paper_detail("test")
         assert result == mock_paper
 
     def test_not_found(self, monkeypatch):
@@ -212,6 +216,28 @@ class TestGetPaperDetail:
             with patch("scholar_search.search.time.sleep"):
                 result = get_paper_detail("x")
         assert result is None
+
+    def test_full_abstract_enrichment(self, monkeypatch):
+        """get_paper_detail 应使用外部源的完整摘要替换 Google Scholar 片段."""
+        monkeypatch.delenv("SCHOLAR_RETRIES", raising=False)
+        mock_paper = {"title": "X", "abstract": "Short...", "url": "https://arxiv.org/abs/1234.5678"}
+        full_abstract = "This is the complete abstract with all details."
+
+        with patch("scholar_search.search._search_request", return_value=[mock_paper]):
+            with patch("scholar_search.search._fetch_external_abstract", return_value=full_abstract):
+                with patch("scholar_search.search.time.sleep"):
+                    result = get_paper_detail("test")
+        assert result["abstract"] == full_abstract
+
+    def test_external_abstract_failed_falls_back(self, monkeypatch):
+        """外部摘要获取失败时保留 Google Scholar 片段."""
+        monkeypatch.delenv("SCHOLAR_RETRIES", raising=False)
+        mock_paper = {"title": "X", "abstract": "Snippet.", "url": "https://springer.com/x"}
+        with patch("scholar_search.search._search_request", return_value=[mock_paper]):
+            with patch("scholar_search.search._fetch_external_abstract", return_value=None):
+                with patch("scholar_search.search.time.sleep"):
+                    result = get_paper_detail("test")
+        assert result["abstract"] == "Snippet."
 
 
 # ---- dedup ----
@@ -294,3 +320,160 @@ class TestSearchByUrl:
             with patch("scholar_search.search.time.sleep"):
                 with pytest.raises(RuntimeError, match="通过 URL 获取论文失败"):
                     search_by_url("https://x.com")
+
+
+# ---- _fetch_external_abstract ----
+
+class TestFetchExternalAbstract:
+    def test_empty_url_returns_none(self):
+        assert _fetch_external_abstract("") is None
+        assert _fetch_external_abstract(None) is None
+
+    def test_arxiv_url_dispatches(self):
+        """arxiv URL 应走 arxiv API 路径."""
+        with patch("scholar_search.search._fetch_arxiv_abstract", return_value="Full arxiv abstract") as mock_arxiv:
+            with patch("scholar_search.search._fetch_meta_abstract") as mock_meta:
+                result = _fetch_external_abstract("https://arxiv.org/abs/1234.5678")
+        assert result == "Full arxiv abstract"
+        mock_arxiv.assert_called_once_with("1234.5678")
+        mock_meta.assert_not_called()
+
+    def test_non_arxiv_url_uses_meta(self):
+        """非 arxiv URL 应走 meta 标签路径."""
+        with patch("scholar_search.search._fetch_meta_abstract", return_value="Meta abstract") as mock_meta:
+            result = _fetch_external_abstract("https://springer.com/article/123")
+        assert result == "Meta abstract"
+        mock_meta.assert_called_once_with("https://springer.com/article/123")
+
+    def test_both_fail_returns_none(self):
+        with patch("scholar_search.search._fetch_arxiv_abstract", return_value=None):
+            with patch("scholar_search.search._fetch_meta_abstract", return_value=None):
+                result = _fetch_external_abstract("https://other.com/paper")
+        assert result is None
+
+
+# ---- _fetch_arxiv_abstract ----
+
+class TestFetchArxivAbstract:
+    def test_success(self):
+        xml_resp = '''<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Test Paper</title>
+    <summary>  Full abstract text here.  </summary>
+  </entry>
+</feed>'''
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = xml_resp
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_arxiv_abstract("1234.5678")
+        assert result == "Full abstract text here."
+
+    def test_http_error_returns_none(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_arxiv_abstract("1234.5678")
+        assert result is None
+
+    def test_exception_returns_none(self):
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.side_effect = Exception("Network error")
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_arxiv_abstract("1234.5678")
+        assert result is None
+
+
+# ---- _fetch_meta_abstract ----
+
+class TestFetchMetaAbstract:
+    def test_citation_abstract_priority(self):
+        """citation_abstract 优先级最高."""
+        long_abstract = "A" * 100
+        html = f'<html><head><meta name="citation_abstract" content="{long_abstract}">'
+        html += '<meta name="description" content="Short desc"></head></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.text = html
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_meta_abstract("https://example.com/paper")
+        assert result == long_abstract
+
+    def test_description_fallback(self):
+        """无 citation_abstract 时用 description."""
+        long_desc = "B" * 100
+        html = f'<html><head><meta name="description" content="{long_desc}"></head></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.text = html
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_meta_abstract("https://example.com/paper")
+        assert result == long_desc
+
+    def test_short_description_filtered(self):
+        """太短的 description 被过滤."""
+        html = '<html><head><meta name="description" content="Short"></head></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "text/html"}
+        mock_resp.text = html
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_meta_abstract("https://example.com/paper")
+        assert result is None
+
+    def test_pdf_skipped(self):
+        """PDF 响应跳过 meta 提取."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"Content-Type": "application/pdf"}
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_meta_abstract("https://example.com/paper.pdf")
+        assert result is None
+
+    def test_http_error_returns_none(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_session = MagicMock()
+        mock_session.__enter__ = lambda s: s
+        mock_session.__exit__ = lambda s, *a: None
+        mock_session.get.return_value = mock_resp
+
+        with patch("scholar_search.search._make_session", return_value=mock_session):
+            result = _fetch_meta_abstract("https://example.com/paper")
+        assert result is None

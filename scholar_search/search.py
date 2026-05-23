@@ -3,6 +3,7 @@
 import os
 import random
 import re
+import xml.etree.ElementTree as ET
 import time
 import logging
 import concurrent.futures
@@ -273,7 +274,7 @@ def search_papers(
 
 
 def get_paper_detail(title: str) -> dict | None:
-    """根据标题搜索单篇论文，填充完整信息."""
+    """根据标题搜索单篇论文，尝试从外部源获取完整摘要."""
 
     def _do_fetch():
         time.sleep(_jitter(0.5))
@@ -281,7 +282,13 @@ def get_paper_detail(title: str) -> dict | None:
             try:
                 papers = _search_request(title)
                 if papers:
-                    return papers[0]
+                    paper = papers[0]
+                    # 尝试从外部 URL 获取完整摘要
+                    url = paper.get("url", "")
+                    full_abstract = _fetch_external_abstract(url)
+                    if full_abstract:
+                        paper["abstract"] = full_abstract
+                    return paper
                 return None
             except RuntimeError as e:
                 is_rate = _is_rate_limit_error(e)
@@ -293,6 +300,83 @@ def get_paper_detail(title: str) -> dict | None:
         return None
 
     return _run_with_timeout(_do_fetch)
+
+
+def _fetch_external_abstract(paper_url: str) -> str | None:
+    """尝试从论文外部来源获取完整摘要.
+
+    策略:
+    1. arxiv URL → arxiv API (结构化 XML, 可靠)
+    2. 其他 URL → 请求页面, 从 meta 标签提取
+    3. 失败返回 None (调用方回退到 Google Scholar 片段)
+    """
+    if not paper_url:
+        return None
+
+    # ---- arxiv ----
+    arxiv_match = re.search(r'arxiv\.org/abs/([\w.-]+)', paper_url)
+    if arxiv_match:
+        return _fetch_arxiv_abstract(arxiv_match.group(1))
+
+    # ---- 通用 meta 标签 ----
+    return _fetch_meta_abstract(paper_url)
+
+
+def _fetch_arxiv_abstract(arxiv_id: str) -> str | None:
+    """通过 arxiv API 获取完整摘要."""
+    try:
+        session = _make_session()
+        try:
+            resp = session.get(
+                f"http://export.arxiv.org/api/query?id_list={arxiv_id}&max_results=1",
+                timeout=get_timeout(),
+            )
+            if resp.status_code != 200:
+                return None
+            ns = {"a": "http://www.w3.org/2005/Atom"}
+            root = ET.fromstring(resp.text)
+            summary = root.find(".//a:summary", ns)
+            if summary is not None and summary.text:
+                return summary.text.strip().replace("\n", " ")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.debug("arxiv abstract fetch failed: %s", e)
+    return None
+
+
+def _fetch_meta_abstract(paper_url: str) -> str | None:
+    """从页面 meta 标签提取摘要 (citation_abstract > description > og:description)."""
+    try:
+        session = _make_session()
+        try:
+            resp = session.get(paper_url, timeout=get_timeout())
+            if resp.status_code != 200:
+                return None
+
+            # 跳过非 HTML 响应 (PDF 等)
+            content_type = resp.headers.get("Content-Type", "")
+            if "pdf" in content_type.lower() or "application/" in content_type.lower():
+                return None
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            for sel in [
+                'meta[name="citation_abstract"]',
+                'meta[name="description"]',
+                'meta[name="dc.description"]',
+                'meta[name="abstract"]',
+                'meta[property="og:description"]',
+            ]:
+                tag = soup.select_one(sel)
+                if tag and tag.get("content"):
+                    text = tag["content"].strip()
+                    if len(text) > 80:  # 过滤太短的描述
+                        return text
+        finally:
+            session.close()
+    except Exception as e:
+        logger.debug("meta abstract fetch failed: %s", e)
+    return None
 
 
 def search_by_url(paper_url: str) -> dict | None:
