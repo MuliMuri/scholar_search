@@ -21,7 +21,13 @@ from scholar_search.search import (
 
 
 def _make_result_html(title="Test Paper", authors_text="A Smith, B Jones - NeurIPS 2023",
-                      abstract="A great paper.", citations=42, url="https://arxiv.org/123"):
+                      abstract="A great paper.", citations=42, url="https://arxiv.org/123",
+                      full_abstract=""):
+    fma = ""
+    if full_abstract:
+        fma = f"""<div class="gs_fma_abs"><div class="gs_fma_grad"></div>
+<div class="gs_fma_snp"><div><div>{full_abstract}</div></div></div>
+<div class="gs_fma_fons"><div class="gs_fma_fon">Publisher</div></div></div>"""
     return f"""<div class="gs_r gs_or gs_scl">
 <div class="gs_ri">
 <h3 class="gs_rt"><a href="{url}">{title}</a></h3>
@@ -29,6 +35,7 @@ def _make_result_html(title="Test Paper", authors_text="A Smith, B Jones - NeurI
 <div class="gs_rs">{abstract}</div>
 <div class="gs_fl"><a href="#">Cited by {citations}</a></div>
 </div>
+{fma}
 </div>"""
 
 
@@ -92,6 +99,33 @@ class TestPubToDict:
         assert result["citations"] == 15
         assert result["abstract"] == "Deep learning."
         assert result["url"] == "http://x.com"
+
+    def test_fma_abs_priority(self):
+        """gs_fma_abs (展开面板) 的完整摘要优先级高于 gs_rs 的截断版."""
+        short = "Short snippet..."
+        full = "This is the full abstract with much more content than the snippet."
+        html = _make_result_html(
+            "Paper X", "Author - 2024", short, 10, "http://x.com",
+            full_abstract=full,
+        )
+        soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
+        result = _pub_to_dict(soup)
+        assert result["abstract"] == full
+
+    def test_fma_abs_empty_falls_back_to_gs_rs(self):
+        """gs_fma_abs 存在但 gs_fma_snp 为空时，回退到 gs_rs."""
+        html = """<div class="gs_r gs_or gs_scl">
+<div class="gs_ri">
+<h3 class="gs_rt"><a href="http://x.com">Paper Y</a></h3>
+<div class="gs_a">Author - 2024</div>
+<div class="gs_rs">Snippet from gs_rs.</div>
+<div class="gs_fl"><a href="#">Cited by 5</a></div>
+</div>
+<div class="gs_fma_abs"><div class="gs_fma_grad"></div><div class="gs_fma_snp"></div></div>
+</div>"""
+        soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
+        result = _pub_to_dict(soup)
+        assert result["abstract"] == "Snippet from gs_rs."
 
 
 # ---- _parse_search_page ----

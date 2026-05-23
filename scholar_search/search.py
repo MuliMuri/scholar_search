@@ -129,8 +129,16 @@ def _pub_to_dict(paper_soup: BeautifulSoup) -> dict:
         year = year_match.group(0)
 
     # ---- 摘要 ----
-    abstract_tag = paper_soup.select_one("div.gs_rs")
-    abstract = abstract_tag.get_text(" ", strip=True) if abstract_tag else ""
+    # 优先取 gs_fma_abs（展开面板中的完整摘要），否则用 gs_rs（截断版）
+    abstract = ""
+    fma_abs = paper_soup.select_one("div.gs_fma_abs")
+    if fma_abs:
+        snp = fma_abs.select_one("div.gs_fma_snp")
+        if snp:
+            abstract = snp.get_text(" ", strip=True)
+    if not abstract:
+        abstract_tag = paper_soup.select_one("div.gs_rs")
+        abstract = abstract_tag.get_text(" ", strip=True) if abstract_tag else ""
 
     # ---- 引用量 ----
     citations = 0
