@@ -1,10 +1,11 @@
-"""Google Scholar MCP Server — 供 CherryStudio 等 AI 客户端调用.
+"""Scholar Search MCP Server — 供 CherryStudio 等 AI 客户端调用.
 
+支持双搜索引擎: Bing 学术 (免代理, 默认) + Google Scholar (需代理).
 Tool 列表:
-- search_papers: 搜索谷歌学术论文
+- search_papers: 搜索学术论文
 - get_paper_detail: 获取单篇论文详细信息
 - analyze_relevance: 论文主题相关性分析
-- generate_relevance_chart: 生成相关性 HTML 柱状图
+- generate_relevance_chart: 生成多角度相关性图表
 """
 
 import asyncio
@@ -15,9 +16,11 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from scholar_search.search import search_papers as _search_papers
-from scholar_search.search import get_paper_detail as _get_paper_detail
-from scholar_search.search import search_by_url as _search_by_url
+from scholar_search.search import search_papers as _gs_search_papers
+from scholar_search.search import get_paper_detail as _gs_get_paper_detail
+from scholar_search.search import search_by_url as _gs_search_by_url
+from scholar_search.bing_search import search_papers_bing as _bing_search_papers
+from scholar_search.bing_search import get_paper_detail_bing as _bing_get_paper_detail
 from scholar_search.analysis import analyze_relevance as _analyze_relevance
 from scholar_search.viz import generate_relevance_chart as _generate_chart
 
@@ -49,10 +52,10 @@ async def search_papers(
     num_results: int = 10,
     year_low: Optional[int] = None,
     year_high: Optional[int] = None,
+    engine: str = "bing",
 ) -> str:
-    """搜索谷歌学术论文，自动去重.
+    """搜索学术论文，支持双搜索引擎.
 
-    基于标题词汇重叠率（>=75%）自动去重，保留引用量更高的版本。
     单次请求最多返回 30 条结果，已内置请求间隔和限流重试。
 
     Args:
@@ -60,22 +63,46 @@ async def search_papers(
         num_results: 返回论文数量，1-30，默认 10
         year_low: 发表年份下限，如 2020
         year_high: 发表年份上限，如 2024
+        engine: 搜索引擎 — "bing"(默认, 免代理), "google"(需代理), "auto"(Bing优先, 失败自动切Google)
     """
-    logger.info("搜索: %s (num=%d, year=%s-%s)", query, num_results, year_low, year_high)
+    engine = engine.lower()
+    if engine not in ("bing", "google", "auto"):
+        engine = "bing"
+
+    logger.info("搜索: %s (engine=%s, num=%d, year=%s-%s)", query, engine, num_results, year_low, year_high)
+
+    def _search():
+        if engine == "google":
+            return _gs_search_papers(
+                query=query, num_results=num_results,
+                year_low=year_low, year_high=year_high,
+            )
+        elif engine == "auto":
+            try:
+                return _bing_search_papers(
+                    query=query, num_results=num_results,
+                    year_low=year_low, year_high=year_high,
+                )
+            except Exception:
+                logger.warning("Bing 搜索失败，回退到 Google Scholar")
+                return _gs_search_papers(
+                    query=query, num_results=num_results,
+                    year_low=year_low, year_high=year_high,
+                )
+        else:
+            return _bing_search_papers(
+                query=query, num_results=num_results,
+                year_low=year_low, year_high=year_high,
+            )
 
     try:
-        papers = await asyncio.to_thread(
-            _search_papers,
-            query=query,
-            num_results=num_results,
-            year_low=year_low,
-            year_high=year_high,
-        )
+        papers = await asyncio.to_thread(_search)
     except RuntimeError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     result = {
         "query": query,
+        "engine": engine if engine != "auto" else papers[0].get("engine", "bing") if papers else "auto",
         "total_found": len(papers),
         "papers": papers,
     }
@@ -86,26 +113,39 @@ async def search_papers(
 async def get_paper_detail(
     title: str = "",
     url: str = "",
+    engine: str = "bing",
 ) -> str:
-    """获取单篇论文的详细信息，包括摘要、引用量等.
+    """获取单篇论文的详细信息，自动从外部源获取完整摘要.
 
     Args:
         title: 论文标题（精确匹配效果更好）
-        url: 论文的 Google Scholar URL（与 title 二选一）
+        url: 论文 URL（Google Scholar URL 仅限 engine=google 时使用，与 title 二选一）
+        engine: 搜索引擎 — "bing"(默认, 免代理), "google"(需代理), "auto"(Bing优先, 失败切Google)
     """
-    logger.info("获取详情: title=%s, url=%s", title, url)
+    engine = engine.lower()
+    if engine not in ("bing", "google", "auto"):
+        engine = "bing"
+
+    logger.info("获取详情: title=%s, url=%s, engine=%s", title, url, engine)
+
+    def _fetch():
+        if url and "scholar.google" in url:
+            return _gs_search_by_url(url)
+        elif engine == "google":
+            return _gs_get_paper_detail(title) if title else None
+        elif engine == "auto":
+            try:
+                return _bing_get_paper_detail(title) if title else None
+            except Exception:
+                logger.warning("Bing 详情获取失败，回退到 Google Scholar")
+                return _gs_get_paper_detail(title) if title else None
+        else:
+            return _bing_get_paper_detail(title) if title else None
 
     try:
-        if url:
-            paper = await asyncio.to_thread(_search_by_url, url)
-        elif title:
-            paper = await asyncio.to_thread(_get_paper_detail, title)
-        else:
-            return json.dumps({"error": "请提供 title 或 url 参数"}, ensure_ascii=False)
-
+        paper = await asyncio.to_thread(_fetch)
         if paper is None:
             return json.dumps({"error": "未找到匹配的论文"}, ensure_ascii=False)
-
     except RuntimeError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

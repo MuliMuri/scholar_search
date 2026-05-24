@@ -17,12 +17,12 @@ class TestSearchPapersTool:
     @pytest.mark.asyncio
     async def test_success(self, tool_func):
         mock_results = [
-            {"title": "Paper A", "authors": ["Alice"]},
-            {"title": "Paper B", "authors": ["Bob"]},
+            {"title": "Paper A", "authors": ["Alice"], "engine": "google"},
+            {"title": "Paper B", "authors": ["Bob"], "engine": "google"},
         ]
 
-        with patch("server._search_papers", return_value=mock_results) as mock_search:
-            result = await tool_func(query="test", num_results=5)
+        with patch("server._gs_search_papers", return_value=mock_results) as mock_search:
+            result = await tool_func(query="test", num_results=5, engine="google")
 
         data = json.loads(result)
         assert data["query"] == "test"
@@ -35,10 +35,10 @@ class TestSearchPapersTool:
 
     @pytest.mark.asyncio
     async def test_with_year_filters(self, tool_func):
-        mock_results = [{"title": "X", "year": 2022}]
+        mock_results = [{"title": "X", "year": 2022, "engine": "google"}]
 
-        with patch("server._search_papers", return_value=mock_results) as mock_search:
-            result = await tool_func(query="test", year_low=2020, year_high=2024)
+        with patch("server._gs_search_papers", return_value=mock_results) as mock_search:
+            result = await tool_func(query="test", year_low=2020, year_high=2024, engine="google")
 
         data = json.loads(result)
         assert data["total_found"] == 1
@@ -48,8 +48,8 @@ class TestSearchPapersTool:
 
     @pytest.mark.asyncio
     async def test_runtime_error(self, tool_func):
-        with patch("server._search_papers", side_effect=RuntimeError("Proxy error")):
-            result = await tool_func(query="test")
+        with patch("server._gs_search_papers", side_effect=RuntimeError("Proxy error")):
+            result = await tool_func(query="test", engine="google")
 
         data = json.loads(result)
         assert "error" in data
@@ -57,12 +57,34 @@ class TestSearchPapersTool:
 
     @pytest.mark.asyncio
     async def test_empty_results(self, tool_func):
-        with patch("server._search_papers", return_value=[]):
-            result = await tool_func(query="obscure_query")
+        with patch("server._gs_search_papers", return_value=[]):
+            result = await tool_func(query="obscure_query", engine="google")
 
         data = json.loads(result)
         assert data["total_found"] == 0
         assert data["papers"] == []
+
+    @pytest.mark.asyncio
+    async def test_bing_engine(self, tool_func):
+        """默认引擎为 bing."""
+        mock_results = [{"title": "Bing Paper", "engine": "bing"}]
+        with patch("server._bing_search_papers", return_value=mock_results) as mock_bing:
+            result = await tool_func(query="test")
+        data = json.loads(result)
+        assert data["papers"][0]["title"] == "Bing Paper"
+        assert "engine" in data
+        mock_bing.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_engine_falls_back(self, tool_func):
+        """auto 模式 Bing 失败时回退到 Google."""
+        gs_results = [{"title": "Google Paper", "engine": "google"}]
+        with patch("server._bing_search_papers", side_effect=RuntimeError("Bing down")):
+            with patch("server._gs_search_papers", return_value=gs_results) as mock_gs:
+                result = await tool_func(query="test", engine="auto")
+        data = json.loads(result)
+        assert data["papers"][0]["title"] == "Google Paper"
+        mock_gs.assert_called_once()
 
 
 # ---- get_paper_detail tool ----
@@ -78,8 +100,8 @@ class TestGetPaperDetailTool:
     async def test_by_title_success(self, tool_func):
         mock_paper = {"title": "Test Paper", "abstract": "Test abstract"}
 
-        with patch("server._get_paper_detail", return_value=mock_paper) as mock_get:
-            result = await tool_func(title="Test Paper")
+        with patch("server._gs_get_paper_detail", return_value=mock_paper) as mock_get:
+            result = await tool_func(title="Test Paper", engine="google")
 
         data = json.loads(result)
         assert data["title"] == "Test Paper"
@@ -89,7 +111,7 @@ class TestGetPaperDetailTool:
     async def test_by_url_success(self, tool_func):
         mock_paper = {"title": "URL Paper"}
 
-        with patch("server._search_by_url", return_value=mock_paper) as mock_url:
+        with patch("server._gs_search_by_url", return_value=mock_paper) as mock_url:
             result = await tool_func(url="https://scholar.google.com/xxx")
 
         data = json.loads(result)
@@ -98,12 +120,12 @@ class TestGetPaperDetailTool:
 
     @pytest.mark.asyncio
     async def test_url_priority_over_title(self, tool_func):
-        """同时提供 title 和 url 时优先使用 url."""
+        """Google Scholar URL 时优先走 URL 路径."""
         mock_url_paper = {"title": "URL Paper"}
 
-        with patch("server._search_by_url", return_value=mock_url_paper) as mock_url:
-            with patch("server._get_paper_detail") as mock_title:
-                result = await tool_func(title="Title Paper", url="https://x.com")
+        with patch("server._gs_search_by_url", return_value=mock_url_paper) as mock_url:
+            with patch("server._gs_get_paper_detail") as mock_title:
+                result = await tool_func(title="Title Paper", url="https://scholar.google.com/xxx")
 
         mock_url.assert_called_once()
         mock_title.assert_not_called()
@@ -116,12 +138,12 @@ class TestGetPaperDetailTool:
 
         data = json.loads(result)
         assert "error" in data
-        assert "title" in data["error"] or "url" in data["error"]
+        assert "未找到" in data["error"]
 
     @pytest.mark.asyncio
     async def test_not_found(self, tool_func):
-        with patch("server._get_paper_detail", return_value=None):
-            result = await tool_func(title="Nonexistent")
+        with patch("server._gs_get_paper_detail", return_value=None):
+            result = await tool_func(title="Nonexistent", engine="google")
 
         data = json.loads(result)
         assert "error" in data
@@ -129,12 +151,22 @@ class TestGetPaperDetailTool:
 
     @pytest.mark.asyncio
     async def test_runtime_error(self, tool_func):
-        with patch("server._get_paper_detail", side_effect=RuntimeError("Timeout")):
-            result = await tool_func(title="test")
+        with patch("server._gs_get_paper_detail", side_effect=RuntimeError("Timeout")):
+            result = await tool_func(title="test", engine="google")
 
         data = json.loads(result)
         assert "error" in data
         assert "Timeout" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_bing_engine(self, tool_func):
+        """默认引擎 bing."""
+        mock_paper = {"title": "Bing Detail", "abstract": "Full abstract"}
+        with patch("server._bing_get_paper_detail", return_value=mock_paper) as mock_bing:
+            result = await tool_func(title="Bing Paper")
+        data = json.loads(result)
+        assert data["title"] == "Bing Detail"
+        mock_bing.assert_called_once_with("Bing Paper")
 
 
 # ---- analyze_relevance tool ----
