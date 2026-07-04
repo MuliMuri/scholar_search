@@ -34,3 +34,5 @@ output/
 
 resume
 .claude/
+*.zip
+*.log
