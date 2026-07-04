@@ -81,8 +81,18 @@ def _run_with_timeout(func, *args, timeout: int | None = None):
         return future.result(timeout=t)
 
 
+DOI_PATTERN = re.compile(r"\b(10\.\d{4,}/[^\s\]\)}\"'<>]+)")
+
+
+def _extract_doi(text: str) -> str:
+    m = DOI_PATTERN.search(text)
+    return m.group(1).rstrip(".") if m else ""
+
+
 def _pub_to_dict(paper_soup: BeautifulSoup) -> dict:
     """从单个论文的 HTML 片段解析字段."""
+    full_text = paper_soup.get_text(" ", strip=True)
+
     # ---- 标题 ----
     title_tag = paper_soup.select_one("h3.gs_rt")
     raw_title = title_tag.get_text(" ", strip=True) if title_tag else ""
@@ -151,6 +161,11 @@ def _pub_to_dict(paper_soup: BeautifulSoup) -> dict:
                 citations = int(match.group(1))
                 break
 
+    # ---- DOI ----
+    doi = _extract_doi(full_text)
+    if not doi:
+        doi = _extract_doi(url)
+
     return {
         "title": title,
         "authors": authors,
@@ -161,6 +176,7 @@ def _pub_to_dict(paper_soup: BeautifulSoup) -> dict:
         "url": url,
         "publisher": "",
         "author_ids": [],
+        "doi": doi,
     }
 
 

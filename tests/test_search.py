@@ -10,6 +10,7 @@ from scholar_search.search import (
     _pub_to_dict,
     _parse_search_page,
     _check_captcha,
+    _extract_doi,
     search_papers,
     get_paper_detail,
     search_by_url,
@@ -129,6 +130,45 @@ class TestPubToDict:
         soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
         result = _pub_to_dict(soup)
         assert result["abstract"] == "Snippet from gs_rs."
+
+    def test_doi_from_text(self):
+        html = _make_result_html(
+            "Paper X", "Author - 2024", "DOI: 10.1145/1234567.890123 is the identifier.", 10,
+        )
+        soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
+        result = _pub_to_dict(soup)
+        assert result["doi"] == "10.1145/1234567.890123"
+
+    def test_doi_from_url(self):
+        html = _make_result_html(
+            "Paper X", "Author - 2024", "Abstract without DOI in text.", 10,
+            url="https://doi.org/10.1007/s10664-023-10345",
+        )
+        soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
+        result = _pub_to_dict(soup)
+        assert result["doi"] == "10.1007/s10664-023-10345"
+
+    def test_no_doi(self):
+        html = _make_result_html("Paper X", "Author - 2024", "No DOI here.", 10)
+        soup = BeautifulSoup(html, "lxml").select_one("div.gs_r.gs_or.gs_scl")
+        result = _pub_to_dict(soup)
+        assert result["doi"] == ""
+
+
+# ---- _extract_doi ----
+
+class TestExtractDoi:
+    def test_extracts_standard_doi(self):
+        assert _extract_doi("Article 10.1145/1234567.890123 is here.") == "10.1145/1234567.890123"
+
+    def test_extracts_doi_with_suffix(self):
+        assert _extract_doi("doi: 10.1007/s10664-023-10345-6") == "10.1007/s10664-023-10345-6"
+
+    def test_no_doi_returns_empty(self):
+        assert _extract_doi("No identifier here.") == ""
+
+    def test_doi_with_punctuation_strips_trailing_dot(self):
+        assert _extract_doi("See 10.1145/1234567.") == "10.1145/1234567"
 
 
 # ---- _parse_search_page ----

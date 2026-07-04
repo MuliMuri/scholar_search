@@ -59,8 +59,18 @@ def _run_with_timeout(func, *args, timeout: int | None = None):
         return future.result(timeout=t)
 
 
+DOI_PATTERN = re.compile(r"\b(10\.\d{4,}/[^\s\]\)}\"'<>]+)")
+
+
+def _extract_doi(text: str) -> str:
+    m = DOI_PATTERN.search(text or "")
+    return m.group(1).rstrip(".") if m else ""
+
+
 def _bing_pub_to_dict(result_soup: BeautifulSoup) -> dict:
     """解析单个 Bing 学术搜索结果."""
+    full_text = result_soup.get_text(" ", strip=True)
+
     # 标题
     title_tag = result_soup.select_one("h2 a")
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
@@ -69,7 +79,6 @@ def _bing_pub_to_dict(result_soup: BeautifulSoup) -> dict:
     if title_tag:
         href = title_tag.get("href", "")
         url = f"https://cn.bing.com{href}" if href.startswith("/") else href
-        # 提取 profile id
         id_match = re.search(r'id=([a-f0-9]+)', href)
         if id_match:
             profile_id = id_match.group(1)
@@ -101,7 +110,6 @@ def _bing_pub_to_dict(result_soup: BeautifulSoup) -> dict:
     citations = 0
     cite_tag = result_soup.select_one("span.caption_cite_count")
     if cite_tag:
-        # 引用数在 span 之后: <span>|</span>被引数：42
         tail_text = cite_tag.next_sibling
         if tail_text:
             cite_match = re.search(r"(\d+)", str(tail_text))
@@ -111,6 +119,11 @@ def _bing_pub_to_dict(result_soup: BeautifulSoup) -> dict:
     # 摘要片段
     abstract_tag = result_soup.select_one("div.caption_abstract p")
     abstract = abstract_tag.get_text(" ", strip=True) if abstract_tag else ""
+
+    # DOI
+    doi = _extract_doi(full_text)
+    if not doi:
+        doi = _extract_doi(url)
 
     return {
         "title": title,
@@ -124,6 +137,7 @@ def _bing_pub_to_dict(result_soup: BeautifulSoup) -> dict:
         "author_ids": [],
         "profile_id": profile_id,
         "engine": "bing",
+        "doi": doi,
     }
 
 

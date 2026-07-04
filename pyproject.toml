@@ -1,7 +1,7 @@
 [project]
 name = "scholar-search-mcp"
-version = "0.1.0"
-description = "Google Scholar MCP Server with relevance analysis"
+version = "0.0.4"
+description = "Scholar Search MCP — 双引擎学术论文搜索与相关性分析工具 (Bing + Google Scholar)"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
@@ -20,7 +20,11 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["scholar_search*"]
+
+[tool.setuptools]
+py-modules = ["server"]
 
 [tool.scholar-search]
 # 默认代理地址（优先级最低，会被环境变量覆盖）

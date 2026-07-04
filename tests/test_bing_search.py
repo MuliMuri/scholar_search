@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from scholar_search.bing_search import (
     _bing_pub_to_dict,
     _parse_bing_search_page,
+    _extract_doi,
     search_papers_bing,
     get_paper_detail_bing,
     _fetch_bing_profile_abstract,
@@ -67,6 +68,28 @@ class TestBingPubToDict:
         soup = BeautifulSoup(html, "lxml").select_one("li.aca_algo")
         result = _bing_pub_to_dict(soup)
         assert result["year"] == ""
+
+    def test_doi_from_text(self):
+        html = _make_bing_result_html(
+            abstract="Published at DOI: 10.1145/1234567.890123",
+        )
+        soup = BeautifulSoup(html, "lxml").select_one("li.aca_algo")
+        result = _bing_pub_to_dict(soup)
+        assert result["doi"] == "10.1145/1234567.890123"
+
+    def test_no_doi(self):
+        html = _make_bing_result_html(abstract="No DOI here.")
+        soup = BeautifulSoup(html, "lxml").select_one("li.aca_algo")
+        result = _bing_pub_to_dict(soup)
+        assert result["doi"] == ""
+
+
+class TestExtractDoi:
+    def test_extracts_standard_doi(self):
+        assert _extract_doi("10.1145/1234567.890123") == "10.1145/1234567.890123"
+
+    def test_no_doi_returns_empty(self):
+        assert _extract_doi("Nothing here.") == ""
 
 
 # ---- _parse_bing_search_page ----
